@@ -66,7 +66,6 @@ public class TokenRenewalTests extends IntegrationTest
     public TokenRenewalTests()
     {
         // This overrides the IntegrationTest level timeout that is too restrictive for this particular test
-        timeout = new Timeout(TOKEN_RENEWAL_TEST_TIMEOUT_MILLISECONDS);
     }
 
     @BeforeClass

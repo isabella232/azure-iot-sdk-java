@@ -70,6 +70,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
@@ -214,16 +215,16 @@ public class MultiplexingClientTests extends IntegrationTest
     @BeforeClass
     public static void startProxy()
     {
-        proxyServer = DefaultHttpProxyServer.bootstrap()
-                .withPort(testProxyPort)
-                .withProxyAuthenticator(new BasicProxyAuthenticator(testProxyUser, testProxyPass))
-                .start();
+        //proxyServer = DefaultHttpProxyServer.bootstrap()
+        //        .withPort(testProxyPort)
+        //        .withProxyAuthenticator(new BasicProxyAuthenticator(testProxyUser, testProxyPass))
+        //        .start();
     }
 
     @AfterClass
     public static void stopProxy()
     {
-        proxyServer.stop();
+        //proxyServer.stop();
     }
 
     @Test
@@ -231,6 +232,8 @@ public class MultiplexingClientTests extends IntegrationTest
     {
         testInstance.setup(DEVICE_MULTIPLEX_COUNT);
         testInstance.multiplexingClient.open();
+
+        Thread.sleep(2000);
 
         testSendingMessagesFromMultiplexedClients(testInstance.deviceClientArray);
 
@@ -305,7 +308,7 @@ public class MultiplexingClientTests extends IntegrationTest
         testInstance.multiplexingClient.close();
     }
 
-    @Ignore  // This is more of a performance test than a typical test. It should only be run locally, not at the gate
+    //@Ignore  // This is more of a performance test than a typical test. It should only be run locally, not at the gate
     @ContinuousIntegrationTest
     @Test
     public void sendMessagesMaxDevicesAllowedTimes10MultiplexingClientsParallelOpen() throws Exception
@@ -387,12 +390,12 @@ public class MultiplexingClientTests extends IntegrationTest
         log.debug("Close time: " + (finishCloseTime - startCloseTime) / 1000.0);
     }
 
-    @Ignore  // This is more of a performance test than a typical test. It should only be run locally, not at the gate
+    //@Ignore  // This is more of a performance test than a typical test. It should only be run locally, not at the gate
     @ContinuousIntegrationTest
     @Test
     public void sendMessagesMaxDevicesAllowedTimes10MultiplexingClientsSerialOpen() throws Exception
     {
-        int multiplexingClientCount = 10;
+        int multiplexingClientCount = 1;
         MultiplexingClientTestInstance[] testInstances = new MultiplexingClientTestInstance[multiplexingClientCount];
         long startSetupTime = System.currentTimeMillis();
         for (int i = 0; i < multiplexingClientCount; i++)
@@ -970,16 +973,20 @@ public class MultiplexingClientTests extends IntegrationTest
 
         public boolean clientClosedGracefully = false;
 
+        public boolean isClosed = false;
+
         @Override
         public void execute(IotHubConnectionStatus status, IotHubConnectionStatusChangeReason statusChangeReason, Throwable throwable, Object callbackContext)
         {
             if (status == IotHubConnectionStatus.CONNECTED)
             {
                 isOpen = true;
+                isClosed = false;
             }
             else if (status == IotHubConnectionStatus.DISCONNECTED)
             {
                 isOpen = false;
+                isClosed = true;
 
                 // client may close due to unexpected exception. For our test purposes, we want to validate that this callback gets fired
                 // with reason CLIENT_CLOSE since that is the happy-path close status
@@ -1019,6 +1026,276 @@ public class MultiplexingClientTests extends IntegrationTest
 
         testSendingMessageFromDeviceClient(clientToRegisterAfterOpen);
     }
+
+    @Test
+    public void longhaul_AMQPS_WS() throws Exception
+    {
+        if (testInstance.protocol == IotHubClientProtocol.AMQPS)
+        {
+            return;
+        }
+
+        testInstance.setup(longhaulDeviceCount);
+        ConnectionStatusChangeTracker[] connectionStatusChangeTrackers = new ConnectionStatusChangeTracker[testInstance.deviceClientArray.size()];
+
+        for (int i = 0; i < testInstance.deviceClientArray.size(); i++)
+        {
+            connectionStatusChangeTrackers[i] = new ConnectionStatusChangeTracker();
+            testInstance.deviceClientArray.get(i).registerConnectionStatusChangeCallback(connectionStatusChangeTrackers[i], null);
+            testInstance.deviceClientArray.get(i).setOption("SetSASTokenExpiryTime", 60l);
+        }
+
+        testInstance.multiplexingClient.open();
+
+        long startTime = System.currentTimeMillis();
+        try {
+            while (true)
+            {
+                testSendingMessagesFromMultiplexedClients(testInstance.deviceClientArray);
+
+                for (int i = 0; i < testInstance.deviceClientArray.size(); i++)
+                {
+                    if (connectionStatusChangeTrackers[i].isClosed)
+                    {
+                        fail("DISCONNECTED detected");
+                    }
+                }
+
+                double currentTimeSeconds = (System.currentTimeMillis() - startTime) / 1000.0;
+                double currentTimeMinutes = currentTimeSeconds / 60.0;
+                //log.info("\t\t\t\tTest has been running for " + currentTimeSeconds + " seconds");
+                log.info("\t\t\t\tTest has been running for " + currentTimeMinutes + " minutes");
+
+                Thread.sleep(60*1000);
+            }
+        }
+        finally {
+            testInstance.multiplexingClient.close();
+        }
+    }
+
+    @Test
+    public void longhaulAMQPS() throws Exception
+    {
+        if (testInstance.protocol == IotHubClientProtocol.AMQPS_WS)
+        {
+            return;
+        }
+
+        testInstance.setup(longhaulDeviceCount);
+        ConnectionStatusChangeTracker[] connectionStatusChangeTrackers = new ConnectionStatusChangeTracker[testInstance.deviceClientArray.size()];
+
+        for (int i = 0; i < testInstance.deviceClientArray.size(); i++)
+        {
+            connectionStatusChangeTrackers[i] = new ConnectionStatusChangeTracker();
+            testInstance.deviceClientArray.get(i).registerConnectionStatusChangeCallback(connectionStatusChangeTrackers[i], null);
+            testInstance.deviceClientArray.get(i).setOption("SetSASTokenExpiryTime", 60l);
+        }
+
+        testInstance.multiplexingClient.open();
+
+        long startTime = System.currentTimeMillis();
+        try {
+            while (true)
+            {
+                testSendingMessagesFromMultiplexedClients(testInstance.deviceClientArray);
+
+                for (int i = 0; i < testInstance.deviceClientArray.size(); i++)
+                {
+                    if (connectionStatusChangeTrackers[i].wentDisconnectedRetrying)
+                    {
+                        fail("DISCONNECTED_RETRYING detected");
+                    }
+                }
+
+                double currentTimeSeconds = (System.currentTimeMillis() - startTime) / 1000.0;
+                double currentTimeMinutes = currentTimeSeconds / 60.0;
+                //log.info("\t\t\t\tTest has been running for " + currentTimeSeconds + " seconds");
+                log.info("\t\t\t\tTest has been running for " + currentTimeMinutes + " minutes");
+
+                Thread.sleep(60*1000);
+            }
+        }
+        finally {
+            testInstance.multiplexingClient.close();
+        }
+    }
+
+    private static final int longhaulDeviceCount = 200;
+
+    @Test
+    public void longhaulAMQPS_randomEvents() throws Exception
+    {
+        if (testInstance.protocol == IotHubClientProtocol.AMQPS_WS)
+        {
+            return;
+        }
+
+        int deviceCount = longhaulDeviceCount;
+
+        testInstance.setup(deviceCount);
+        ConnectionStatusChangeTracker[] connectionStatusChangeTrackers = new ConnectionStatusChangeTracker[testInstance.deviceClientArray.size()];
+        List<MessageCallback> messageCallbacks = new ArrayList<>();
+        List<String> expectedC2DMessageCorrelationIds = new ArrayList<>();
+        for (int i = 0; i < testInstance.deviceClientArray.size(); i++)
+        {
+            connectionStatusChangeTrackers[i] = new ConnectionStatusChangeTracker();
+            testInstance.deviceClientArray.get(i).registerConnectionStatusChangeCallback(connectionStatusChangeTrackers[i], null);
+            //testInstance.deviceClientArray.get(i).setOption("SetSASTokenExpiryTime", 60l);
+            String correlationId = UUID.randomUUID().toString();
+            expectedC2DMessageCorrelationIds.add(correlationId);
+            MessageCallback messageCallback = new MessageCallback(correlationId);
+            messageCallbacks.add(messageCallback);
+            testInstance.deviceClientArray.get(i).setMessageCallback(messageCallback, null);
+        }
+
+        testInstance.multiplexingClient.open();
+
+        long startTime = System.currentTimeMillis();
+        try {
+            while (true)
+            {
+                randomEvent(testInstance, deviceCount, messageCallbacks, expectedC2DMessageCorrelationIds, connectionStatusChangeTrackers);
+
+                for (int i = 0; i < testInstance.deviceClientArray.size(); i++)
+                {
+                    if (connectionStatusChangeTrackers[i].isClosed && !connectionStatusChangeTrackers[i].clientClosedGracefully)
+                    {
+                        fail("DISCONNECTED detected");
+                    }
+                }
+
+                double currentTimeSeconds = (System.currentTimeMillis() - startTime) / 1000.0;
+                double currentTimeMinutes = currentTimeSeconds / 60.0;
+                //log.info("\t\t\t\tTest has been running for " + currentTimeSeconds + " seconds");
+                log.info("\t\t\t\tTest has been running for " + currentTimeMinutes + " minutes");
+
+                Thread.sleep(30*1000);
+            }
+        }
+        finally {
+            testInstance.multiplexingClient.close();
+        }
+    }
+
+    @Test
+    public void longhaulAMQPS_WS_randomEvents() throws Exception
+    {
+        if (testInstance.protocol == IotHubClientProtocol.AMQPS)
+        {
+            return;
+        }
+
+        int deviceCount = longhaulDeviceCount;
+
+        testInstance.setup(deviceCount);
+        ConnectionStatusChangeTracker[] connectionStatusChangeTrackers = new ConnectionStatusChangeTracker[testInstance.deviceClientArray.size()];
+        List<MessageCallback> messageCallbacks = new ArrayList<>();
+        List<String> expectedC2DMessageCorrelationIds = new ArrayList<>();
+        for (int i = 0; i < testInstance.deviceClientArray.size(); i++)
+        {
+            connectionStatusChangeTrackers[i] = new ConnectionStatusChangeTracker();
+            testInstance.deviceClientArray.get(i).registerConnectionStatusChangeCallback(connectionStatusChangeTrackers[i], null);
+            //testInstance.deviceClientArray.get(i).setOption("SetSASTokenExpiryTime", 60l);
+            String correlationId = UUID.randomUUID().toString();
+            expectedC2DMessageCorrelationIds.add(correlationId);
+            MessageCallback messageCallback = new MessageCallback(correlationId);
+            messageCallbacks.add(messageCallback);
+            testInstance.deviceClientArray.get(i).setMessageCallback(messageCallback, null);
+        }
+
+        testInstance.multiplexingClient.open();
+
+        long startTime = System.currentTimeMillis();
+        try {
+            while (true)
+            {
+                randomEvent(testInstance, deviceCount, messageCallbacks, expectedC2DMessageCorrelationIds, connectionStatusChangeTrackers);
+
+                for (int i = 0; i < testInstance.deviceClientArray.size(); i++)
+                {
+                    if (connectionStatusChangeTrackers[i].isClosed && !connectionStatusChangeTrackers[i].clientClosedGracefully)
+                    {
+                        fail("DISCONNECTED detected");
+                    }
+                }
+
+                double currentTimeSeconds = (System.currentTimeMillis() - startTime) / 1000.0;
+                double currentTimeMinutes = currentTimeSeconds / 60.0;
+                //log.info("\t\t\t\tTest has been running for " + currentTimeSeconds + " seconds");
+                log.info("\t\t\t\tTest has been running for " + currentTimeMinutes + " minutes");
+
+                Thread.sleep(30*1000);
+            }
+        }
+        finally {
+            testInstance.multiplexingClient.close();
+        }
+    }
+
+    private static void randomEvent(MultiplexingClientTestInstance testInstance, int deviceCount, List<MessageCallback> messageCallbacks, List<String> expectedCorrelationIds, ConnectionStatusChangeTracker[] connectionStatusChangeTrackers) throws MultiplexingClientException, InterruptedException, IOException, IotHubException {
+        int randomEvent = (int) Math.floor(Math.random()*5 + 1);
+        int randomDevice = (int) Math.floor(Math.random() * deviceCount);
+        DeviceClient randomDeviceClient = testInstance.deviceClientArray.get(randomDevice);
+        if (randomEvent == 1)
+        {
+            if (!testInstance.multiplexingClient.isDeviceRegistered(testInstance.deviceIdentityArray.get(randomDevice).getDeviceId()))
+            {
+                log.info("Registering device {}", randomDevice);
+                testInstance.multiplexingClient.registerDeviceClient(randomDeviceClient);
+            }
+
+            log.info("Testing telemetry on device {}", randomDevice);
+            testSendingMessageFromDeviceClient(randomDeviceClient, new Message("asdf"));
+        }
+        if (randomEvent == 2)
+        {
+            log.info("Registering device {}", randomDevice);
+            testInstance.multiplexingClient.registerDeviceClient(randomDeviceClient);
+        }
+        else if (randomEvent == 3)
+        {
+            log.info("Unregistering device {}", randomDevice);
+            testInstance.multiplexingClient.unregisterDeviceClient(randomDeviceClient);
+        }
+        else if (randomEvent == 4 && false) //TODO this still times out waiting for the message?
+        {
+            if (!testInstance.multiplexingClient.isDeviceRegistered(testInstance.deviceIdentityArray.get(randomDevice).getDeviceId()))
+            {
+                log.info("Registering device {}", randomDevice);
+                testInstance.multiplexingClient.registerDeviceClient(randomDeviceClient);
+                messageCallbacks.get(randomDevice).resetExpectations(expectedCorrelationIds.get(randomDevice));
+                testInstance.deviceClientArray.get(randomDevice).setMessageCallback(messageCallbacks.get(randomDevice), null);
+            }
+
+            log.info("Testing C2D on device {}", randomDevice);
+            testReceivingCloudToDeviceMessage(testInstance.deviceIdentityArray.get(randomDevice).getDeviceId(), messageCallbacks.get(randomDevice), expectedCorrelationIds.get(randomDevice));
+            messageCallbacks.get(randomDevice).resetExpectations(expectedCorrelationIds.get(randomDevice));
+        }
+        else if (randomEvent == 5)
+        {
+            if (!testInstance.multiplexingClient.isDeviceRegistered(testInstance.deviceIdentityArray.get(randomDevice).getDeviceId()))
+            {
+                log.info("Registering device {}", randomDevice);
+                testInstance.multiplexingClient.registerDeviceClient(randomDeviceClient);
+                messageCallbacks.get(randomDevice).resetExpectations(expectedCorrelationIds.get(randomDevice));
+                testInstance.deviceClientArray.get(randomDevice).setMessageCallback(messageCallbacks.get(randomDevice), null);
+            }
+            log.info("Injecting fault on device session {}", randomDevice);
+            Message errorInjectionMessage = ErrorInjectionHelper.amqpsSessionDropErrorInjectionMessage(1, 10);
+            Success messageSendSuccess = testSendingMessageFromDeviceClient(testInstance.deviceClientArray.get(randomDevice), errorInjectionMessage);
+            waitForMessageToBeAcknowledged(messageSendSuccess, "Timed out waiting for error injection message to be acknowledged");
+
+            // Now that error injection message has been sent, need to wait for the device session to drop
+            assertConnectionStateCallbackFiredDisconnectedRetrying(connectionStatusChangeTrackers[randomDevice]);
+
+            // Next, the faulted device should eventually recover
+            log.info("Waiting for device {} to reconnect", testInstance.deviceClientArray.get(randomDevice).getConfig().getDeviceId());
+            assertConnectionStateCallbackFiredConnected(connectionStatusChangeTrackers[randomDevice], FAULT_INJECTION_RECOVERY_TIMEOUT_MILLIS);
+        }
+    }
+
+
 
     // Unregister a single device from an active multiplexed connection, test that other devices on that connection
     // can still be used to send telemetry.

@@ -59,12 +59,6 @@ public abstract class IntegrationTest
     @Rule
     public ThrottleResistantTestRule throttleResistantTestRule = new ThrottleResistantTestRule();
 
-    int E2E_TEST_TIMEOUT_MILLISECONDS = 5 * 60 * 1000;
-
-    // Each test must finish in under 5 minutes. Only the token renewal test should last longer,
-    // but that test overrides this value to fit its needs as a very long test.
-    @Rule
-    public Timeout timeout = new Timeout(E2E_TEST_TIMEOUT_MILLISECONDS);
 
     public static boolean isBasicTierHub;
     public static boolean isPullRequest;
